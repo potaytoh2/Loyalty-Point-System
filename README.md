@@ -53,9 +53,9 @@ This section showcases the UI/UX of the frontend
 ![logs][logs]
 
 4. **Edit and Enroll user**
-  <div style="display: flex; justify-content: center;">
-    <img src="images/edit_user.png" alt="edit user" style="width: 50%;"/>
-    <img src="images/enroll_user.png" alt="enroll user" style="width: 50%;"/>
+  <div style="display: flex; justify-content: space-between; align-items: center;">
+    <img src="images/edit_user.png" alt="Product Location" style="width: 50%; display: block; margin: auto;"/>
+    <img src="images/enroll_user.png" alt="Product Help" style="width: 50%; display: block; margin: auto;"/>
 </div>
 
 5. **Adjust points**
