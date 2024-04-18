@@ -1,0 +1,4 @@
+###
+GET http://localhost:8080/points/user/0644C200F32111EEBFF902BF661FFA39
+Authorization: Basic dXNlcjpiYmY4ZTQ1ZS02ZmFhLTRmZTItOTY3MC1jZjEyMmY5ZGJkYTU=
+Content-Type: application/json

@@ -1,0 +1,126 @@
+name: ascenda
+
+services:
+  localstack:
+    container_name: stack-main
+    image: localstack/localstack
+    environment:
+      - PERSISTENCE=1
+    ports:
+      - "4566:4566"
+      - "4510-4559:4510-4559"
+    volumes:
+      - ls-vol:/var/lib/localstack
+    networks:
+      ls:
+        ipv4_address: 10.0.2.20
+  admin:
+    build:
+      context: admin-proxy-service
+      dockerfile: Dockerfile
+    image: admin-proxy-service
+    container_name: admin-proxy
+    hostname: admin
+    environment:
+      - server_port=${ADMIN_PORT}
+      - jwt.keyURL={}
+      - dynamo.host=http://${LS_HOST}:${LS_PORT}
+      - sqs.host=http://${LS_HOST}:${LS_PORT}
+      - sqs.queueName=emails
+      - FROM_EMAIL=FROM_EMAIL
+      - RDS_URL=RDS_URL
+      - DB_USER=DB_USER
+      - DB_PASSWORD=DB_PASSWORD
+      - basedomain=http://localhost:${ADMIN_PORT}
+      - user.host=http://user:${USER_PORT}
+      - points.host=http://points:${POINTS_PORT}
+      - AWS_ACCESS_KEY=key
+      - AWS_SECRET_KEY=secret
+      - REGION=ap-southeast-1
+    depends_on:
+      - localstack
+      - points
+      - user
+    develop:
+      watch:
+        - path: admin-proxy-service/target/admin-0.0.1-SNAPSHOT.jar
+          action: rebuild
+    ports:
+      - "${ADMIN_MAPPED_PORT}:${ADMIN_PORT}"
+    dns:
+      - 10.0.2.20
+    networks:
+      - ls
+  points:
+    build:
+      context: points-service
+      dockerfile: Dockerfile
+    image: points-service
+    container_name: points
+    hostname: points
+    environment:
+      - SPRING_DATASOURCE_URL=jdbc:mysql://mysql/${POINTS_DB}
+      - SPRING_DATASOURCE_USERNAME=${SQL_USER}
+      - SPRING_DATASOURCE_PASSWORD=${SQL_PW}
+    depends_on:
+      - localstack
+      - mysql
+    develop:
+      watch:
+        - path: points-service/target/points-0.0.1-SNAPSHOT.jar
+          action: rebuild
+    ports:
+      - "${POINTS_MAPPED_PORT}:${POINTS_PORT}"
+    dns:
+      - 10.0.2.20
+    networks:
+      - ls
+  user:
+    build:
+      context: user-service
+      dockerfile: Dockerfile
+    image: user-service
+    container_name: user
+    hostname: user
+    environment:
+      - SPRING_DATASOURCE_URL=jdbc:mysql://mysql/${USER_DB}
+      - SPRING_DATASOURCE_USERNAME=${SQL_USER}
+      - SPRING_DATASOURCE_PASSWORD=${SQL_PW}
+      - role.owner=.*:/?user.*,.*:/?points.*,.*:/?request.*,.*:/?accept.*,GET:/?log.*
+      - role.manager=(GET|POST|PUT):/?user.*,.*:/?points.*,.*:/?request.*,.*:/?accept.*,GET:/?log.*
+      - role.engineer=GET:/?user.*,GET:/?points.*,GET:/?log.*
+      - role.product_manager=GET:/?user.*,GET:/?points.*
+    depends_on:
+      - localstack
+      - mysql
+    develop:
+      watch:
+        - path: user-service/target/user-0.0.1-SNAPSHOT.jar
+          action: rebuild
+    ports:
+      - "${USER_MAPPED_PORT}:${USER_PORT}"
+    dns:
+      - 10.0.2.20
+    networks:
+      - ls
+  mysql:
+    image: mysql
+    hostname: mysql
+    container_name: sqldb
+    command: --default-authentication-plugin=mysql_native_password
+    restart: always
+    environment:
+      MYSQL_ROOT_PASSWORD: ${SQL_PW}
+    ports:
+    - "3306:3306"
+    networks:
+      - ls
+
+networks:
+  ls:
+    ipam:
+      config:
+        - subnet: 10.0.2.0/24
+
+volumes:
+  ls-vol:

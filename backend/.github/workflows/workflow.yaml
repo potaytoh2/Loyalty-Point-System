@@ -1,0 +1,254 @@
+name: Deployment to ECS 
+
+on:
+  push:
+    branches:
+      - CICD
+    paths:
+      - 'admin-proxy-service/**'
+      - 'points-service/**'
+      - 'user-service/**'
+  workflow_dispatch:
+
+env:
+  AWS_REGION: ap-southeast-1
+  ECR_REPOSITORY: loyalty-ecr
+  ECR_ADMIN_REPOSITORY: admin-ecr
+  ECR_USER_REPOSITORY: user-ecr
+  ECR_POINTS_REPOSITORY: points-ecr
+  ECS_ADMIN_SERVICE: admin-ecs-service
+  ECS_USER_SERVICE: users
+  ECS_POINTS_SERVICE: points
+  ECS_CLUSTER: ascenda-cluster
+  ECS_ADMIN_TASK_DEFINITION: .aws/admin-task-definition.json # path of the JSON task definition
+  ECS_POINTS_TASK_DEFINITION: .aws/points-task-definition.json
+  ECS_USER_TASK_DEFINITION: .aws/user-task-definition.json
+  ADMIN_CONTAINER_NAME: "admin-service-container"  
+  POINTS_CONTAINER_NAME: "point-service-container"
+  USER_CONTAINER_NAME: "user-service-container"
+
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    # Required permissions
+    permissions:
+      pull-requests: read
+      contents: read
+    # Set job outputs to values from filter step
+    outputs:
+      points-service: ${{ steps.filter.outputs.points-service }}
+      admin-proxy-service: ${{ steps.filter.outputs.admin-proxy-service }}
+      user-service: ${{ steps.filter.outputs.user-service }}
+    steps:
+    # For pull requests it's not necessary to checkout the code
+    - name: Checkout code
+      if: github.event_name != 'pull_request'
+      uses: actions/checkout@v4
+    - uses: dorny/paths-filter@v3
+      id: filter
+      with:
+        base: ${{ github.event.before }}
+        filters: |
+          points-service:
+            - 'points-service/**'
+          admin-proxy-service:
+            - 'admin-proxy-service/**'
+          user-service:
+            - 'user-service/**'
+        
+
+  points-service:
+  # This workflow should only execute when any changes are made in the points-service directory
+    needs: changes
+    if: ${{ needs.changes.outputs.points-service  == 'true' }}
+    runs-on: ubuntu-latest
+    environment: development
+    name: Deploy points service
+
+    steps:
+      - uses: actions/checkout@v4
+      - name: Java Version
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'corretto'
+          java-version: '21'
+          cache: 'maven'
+
+      - name: Build the application
+        id: mvnpackage
+        run:  
+          cd points-service && mvn package -Dmaven.test.skip
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build, tag, and push image to Amazon ECR
+        id: build-image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+          SPRING_DATASOURCE_POINTS_URL: ${{ secrets.SPRING_DATASOURCE_POINTS_URL }}
+          SPRING_DATASOURCE_USERNAME: ${{ secrets.SPRING_DATASOURCE_USERNAME }}
+          SPRING_DATASOURCE_PASSWORD: ${{ secrets.SPRING_DATASOURCE_PASSWORD }}
+        run: |
+          cd points-service
+          docker build -t $ECR_REGISTRY/$ECR_POINTS_REPOSITORY:$IMAGE_TAG \
+            --build-arg SPRING_DATASOURCE_URL="${SPRING_DATASOURCE_POINTS_URL}" \
+            --build-arg SPRING_DATASOURCE_USERNAME="${SPRING_DATASOURCE_USERNAME}" \
+            --build-arg SPRING_DATASOURCE_PASSWORD="${SPRING_DATASOURCE_PASSWORD}" .
+          docker push $ECR_REGISTRY/$ECR_POINTS_REPOSITORY:$IMAGE_TAG
+          echo "image=$ECR_REGISTRY/$ECR_POINTS_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
+    
+      - name: Fill in the new image ID in the Amazon ECS task definition
+        id: task-def
+        uses: aws-actions/amazon-ecs-render-task-definition@c804dfbdd57f713b6c079302a4c01db7017a36fc
+        with:
+          task-definition: ${{ env.ECS_POINTS_TASK_DEFINITION }}
+          container-name: ${{ env.POINTS_CONTAINER_NAME }}
+          image: ${{ steps.build-image.outputs.image }}
+
+      - name: Deploy Amazon ECS task definition
+        uses: aws-actions/amazon-ecs-deploy-task-definition@df9643053eda01f169e64a0e60233aacca83799a
+        with:
+          task-definition: ${{ steps.task-def.outputs.task-definition }}
+          service: ${{ env.ECS_POINTS_SERVICE }}
+          cluster: ${{ env.ECS_CLUSTER }}
+          wait-for-service-stability: true
+  
+  admin-proxy-service:
+    needs: changes
+    if: ${{ needs.changes.outputs.admin-proxy-service  == 'true' }}
+    runs-on: ubuntu-latest
+    environment: development
+    name: Deploy admin proxy
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Java Version
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'corretto'
+          java-version: '21'
+          cache: 'maven'
+
+      - name: Build the application
+        id: mvnpackage
+        run:  
+          cd admin-proxy-service && mvn package -DskipTests
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build, tag, and push image to Amazon ECR
+        id: build-image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          cd admin-proxy-service
+          docker build -t $ECR_REGISTRY/$ECR_ADMIN_REPOSITORY:$IMAGE_TAG .
+          docker push $ECR_REGISTRY/$ECR_ADMIN_REPOSITORY:$IMAGE_TAG
+          echo "image=$ECR_REGISTRY/$ECR_ADMIN_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
+      #create task definition based on image
+      - name: Fill in the new image ID in the Amazon ECS task definition
+        id: task-def
+        uses: aws-actions/amazon-ecs-render-task-definition@c804dfbdd57f713b6c079302a4c01db7017a36fc
+        with:
+          task-definition: ${{ env.ECS_ADMIN_TASK_DEFINITION }}
+          container-name: ${{ env.ADMIN_CONTAINER_NAME }}
+          image: ${{ steps.build-image.outputs.image }}
+
+      - name: Deploy Amazon ECS task definition
+        uses: aws-actions/amazon-ecs-deploy-task-definition@df9643053eda01f169e64a0e60233aacca83799a
+        with:
+          task-definition: ${{ steps.task-def.outputs.task-definition }}
+          service: ${{ env.ECS_ADMIN_SERVICE }}
+          cluster: ${{ env.ECS_CLUSTER }}
+          wait-for-service-stability: true
+
+  user-service:
+    needs: changes
+    if: ${{ needs.changes.outputs.user-service  == 'true' }}
+    runs-on: ubuntu-latest
+    environment: development
+    name: Deploy user service
+
+    steps:
+      - uses: actions/checkout@v4
+      - name: Java Version
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'corretto'
+          java-version: '21'
+          cache: 'maven'
+
+      - name: Build the application
+        id: mvnpackage
+        run:  
+          cd user-service && mvn package
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build, tag, and push image to Amazon ECR
+        id: build-image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+          SPRING_DATASOURCE_USERS_URL: ${{ secrets.SPRING_DATASOURCE_USERS_URL }}
+          SPRING_DATASOURCE_USERNAME: ${{ secrets.SPRING_DATASOURCE_USERNAME }}
+          SPRING_DATASOURCE_PASSWORD: ${{ secrets.SPRING_DATASOURCE_PASSWORD }}
+        run: |
+          cd user-service
+          docker build -t $ECR_REGISTRY/$ECR_USER_REPOSITORY:$IMAGE_TAG \
+            --build-arg SPRING_DATASOURCE_URL="${SPRING_DATASOURCE_USERS_URL}" \
+            --build-arg SPRING_DATASOURCE_USERNAME="${SPRING_DATASOURCE_USERNAME}" \
+            --build-arg SPRING_DATASOURCE_PASSWORD="${SPRING_DATASOURCE_PASSWORD}" \
+            --build-arg SPRING_DATASOURCE_DRIVER-CLASS-NAME="com.mysql.cj.jdbc.Driver" .
+          docker push $ECR_REGISTRY/$ECR_USER_REPOSITORY:$IMAGE_TAG
+          echo "image=$ECR_REGISTRY/$ECR_USER_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
+        
+      - name: Fill in the new image ID in the Amazon ECS task definition
+        id: task-def
+        uses: aws-actions/amazon-ecs-render-task-definition@c804dfbdd57f713b6c079302a4c01db7017a36fc
+        with:
+          task-definition: ${{ env.ECS_USER_TASK_DEFINITION }}
+          container-name: ${{ env.USER_CONTAINER_NAME }}
+          image: ${{ steps.build-image.outputs.image }}
+
+      - name: Deploy Amazon ECS task definition
+        uses: aws-actions/amazon-ecs-deploy-task-definition@df9643053eda01f169e64a0e60233aacca83799a
+        with:
+          task-definition: ${{ steps.task-def.outputs.task-definition }}
+          service: ${{ env.ECS_USER_SERVICE }}
+          cluster: ${{ env.ECS_CLUSTER }}
+          wait-for-service-stability: true
+        
+    
